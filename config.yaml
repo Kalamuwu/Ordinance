@@ -1,0 +1,27 @@
+# 
+# Ordnance v2
+# Written by: @Kalamuwu
+# Github: https://github.com/Kalamuwu/
+# 
+# This is the Ordnance configuration file. Change these variables and flags to change how
+# this behaves. All plugin and unit configuration takes place here.
+# 
+
+---
+
+auto_update:
+  auto_update_ordinance: false
+  interval_days: 14
+
+core:
+  create_startup_systemd_service: true
+  issue_iptables_ban_comment: True
+
+writers:
+  enabled:
+    email: false
+    logfile: false
+    notif: false
+    stdout: true
+    syslog: false
+
