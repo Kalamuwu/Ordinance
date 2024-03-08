@@ -1,0 +1,31 @@
+# 
+# Ordinance v4.0
+# Written by: Kalamuwu
+# Github: https://github.com/Kalamuwu/Ordinance
+# 
+# This is the Ordinance configuration file. Change these variables and flags to change how
+# this tool behaves. All plugin configuration also takes place here.
+# 
+
+---
+
+core:
+  scheduler_tick: 30
+
+api:
+  http_server:
+    interface:
+    port:
+
+writers:
+  enabled:
+    - stdout
+    - logfile
+  logfile:
+    files:
+      - path: logs/debug.log
+        mask: 0b1111111
+      - path: logs/standard.log
+        mask: 0b1111110
+      - path: logs/important.log
+        mask: 0b1110000

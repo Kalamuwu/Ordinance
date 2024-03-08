@@ -1,0 +1,13 @@
+[Unit]
+Description=Ordinance Core v4.0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/env python3 /var/ordinance/daemon.py
+#LoadCredential=network.dns
+#Restart=on-abnormal
+
+[Install]
+WantedBy=multi-user.target

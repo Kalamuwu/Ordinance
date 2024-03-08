@@ -1,0 +1,23 @@
+# 
+# plugin scaffolding
+# 
+
+---
+
+name: Plugin Template
+description: A template plugin scaffolding.
+author: Kalamuwu
+version: 1.0.0
+
+entry_file: template
+
+default_config:
+  myvar: 4
+  mystring: Hello, Ordinance!
+  myobj:
+    inside: null
+    inside-2: [1, 2, 3]
+  outside:
+    - a
+    - b
+    - c
