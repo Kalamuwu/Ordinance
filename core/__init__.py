@@ -19,6 +19,7 @@ import datetime
 import time
 import threading
 import asyncio
+import collections
 import yaml
 import json
 import yaml.parser
@@ -36,7 +37,7 @@ import ordinance.plugin
 import ordinance.schedule
 import ordinance.util
 
-VERSION = "4.0"
+VERSION = "4.1"
 
 default_config_yaml = f"""# 
 # Ordinance v{VERSION}
@@ -69,6 +70,8 @@ writers:
         mask: 0b1111110
       - path: logs/important.log
         mask: 0b1110000
+  notif:
+    dbus_username:
 """
 
 def _safe_load_config_path(config_path: str, _make_if_missing: bool = True) -> Dict[str, Any]:
@@ -129,7 +132,8 @@ class Core:
             this_writer_config = writer_configs.get(writer, {})
             try: ordinance.writer.enable(writer, this_writer_config)
             except ordinance.exceptions.WriterNotFound:
-                warning = f"Unknown writer type '{writer}' in config writers.enabled"
+                warning = f"Unknown writer type '{writer}' in config writers.enabled\n" + \
+                          f"(hint: it may have failed to import, check the logs)"
                 ordinance.writer.warn(warning)
                 if writer == 'stdout': print(warning)  # just in case
             except Exception as e:
@@ -144,20 +148,18 @@ class Core:
         core.network_interface.read_dbs()
         core.network_interface.setup_iptables()
 
+        self.active_threads: List[threading.Thread] = []
         # initialize plugins list
         all_qnames = core.plugin_interface.fetch_all_qnames()
         self.__plugins: Dict[str, ordinance.plugin.OrdinancePlugin] = \
             { qname: None for qname in all_qnames }
         self.__schedules: Dict[str, Dict[str, ordinance.schedule.ScheduledFunction]] = \
-            { qname: {} for qname in all_qnames }
+            { qname: None for qname in all_qnames }
         self.__commands: Dict[str, Dict[str, ...]] = \
-            { qname: {} for qname in all_qnames }
+            { qname: None for qname in all_qnames }
         if load_plugins:
             for qname in self.__plugins.keys():
-                try: self.plugin_load(qname)
-                except Exception as e:
-                    warning = f"Unknown writer type '{writer}' in config writers.enabled"
-                    ordinance.writer.warn(warning)
+                self.plugin_load(qname)
         
         # initialize scheduler stuffs
         sched_tick = self.__config.get('core', {}).get('scheduler_tick', 30)
@@ -167,6 +169,7 @@ class Core:
         self.__scheduler_thread = threading.Thread(
             target=self._scheduler_loop, args=(sched_tick, sched_subtick,),
             name='Ordinance-scheduler')
+        self.__event_queue = collections.deque()  # note: deque is threadsafe
         self._scheduler_should_run = True
         self.__scheduler_thread.start()
         
@@ -201,6 +204,8 @@ class Core:
         self.__api_server.stop()
         
         # ensure scheduler and plugins are stopped
+        for qname in self.__plugins.keys():
+            self.plugin_unload(qname)
         self._scheduler_should_run = False
         self.__scheduler_thread.join()
         
@@ -252,6 +257,9 @@ class Core:
             plugin = plugin_class(conf)
         
         except Exception as e:
+            self.__plugins[qname]   = None
+            self.__schedules[qname] = None
+            self.__commands[qname]  = None
             ordinance.writer.debug(f"plugin {qname} load failed. error:")
             ordinance.writer.debug(e)
             ordinance.writer.error(f"Plugin {qname} load failed, with error:", repr(e))
@@ -262,6 +270,7 @@ class Core:
             self.__plugins[qname] = plugin
             self.__schedules[qname] = scheds
             self.__commands[qname] = cmds
+            self.fire_event('ordinance:plugin.start', plugins_list=[qname])
 
 
     def plugin_unload(self, qname: str) -> None:
@@ -273,6 +282,16 @@ class Core:
         
         try:
             ordinance.writer.debug(f"qname {qname} in good state for unload; doing predel...")
+
+            # fire and handle plugin stop event
+            active = self._fire_event_thread('ordinance:plugin.stop', [qname])
+            if len(active):
+                ordinance.writer.debug(f"spawned {len(active)} threads for stop event.")
+                active = async_join_threads(active, timeout=5.0)
+            if len(active):
+                ordinance.writer.info(f"Some threads did not finish within 5 seconds. Dropping.")
+            ordinance.writer.info(f"Event plugin.stop done, closing.")
+            
             #TODO when scheds and cmds are saved, unregister them here
 
             ordinance.writer.debug(f"removing module from sys.modules[]...")
@@ -282,7 +301,8 @@ class Core:
             ordinance.writer.debug(f"plugin {qname} unload failed. error:")
             ordinance.writer.debug(e)
             ordinance.writer.error(f"Plugin {qname} unload failed, with error:", repr(e))
-            ordinance.writer.info(f"[!] plugin is in undefined state. removing anyways. [!]")
+            ordinance.writer.warn(f"[!] plugin is in undefined state. removing anyways. [!]")
+            raise
         
         else:
             ordinance.writer.debug(f"all ok. removing plugin {qname}.")
@@ -294,9 +314,9 @@ class Core:
             # deallocating the name; with setting to None, the name persists, but
             # the underlying object is still destroyed). regardless, from the gc's
             # perspective, this shouldn't leak. (hopefully.)
-            self.__plugins[qname] = None
+            self.__plugins[qname]   = None
             self.__schedules[qname] = None
-            self.__commands[qname] = None
+            self.__commands[qname]  = None
     
 
     def is_known_plugin(self, qname: str) -> bool:
@@ -307,7 +327,6 @@ class Core:
         ordinance.writer.debug("Started scheduler thread.")
         localtz = core.schedule_interface.local_tz()
         scheduler_start = datetime.datetime.now(tz=localtz)
-        active_threads: List[threading.Thread] = []
         granularity = tick_interval/2
         subtick_start = time.time()
         elapsed_subtick_time = 0
@@ -326,7 +345,7 @@ class Core:
             tick_start = time.time()
             time_now = datetime.datetime.now(tz=localtz)
             total_elapsed = time_now - scheduler_start
-            active_threads = [th for th in active_threads if th.is_alive()]
+            self.active_threads = [th for th in self.active_threads if th.is_alive()]
 
             def calendar_filter(trigger):
                 return core.schedule_interface.calendar_trigger_should_run(
@@ -340,43 +359,90 @@ class Core:
                 return core.schedule_interface.periodic_trigger_should_run(
                     trigger, total_elapsed, granularity=granularity)
             
-            for plugin_name,scheduled_funcs in self.__schedules.items():
-                plugin_instance = self.__plugins[plugin_name]
-                for sched_name,sched in scheduled_funcs.items():
-                    for trig in sched._get_triggers():
-                        if ( isinstance(trig, ordinance.schedule.CalendarTrigger) and calendar_filter(trig) ) \
-                        or ( isinstance(trig, ordinance.schedule.DelayTrigger)    and delay_filter(trig)    ) \
-                        or ( isinstance(trig, ordinance.schedule.PeriodicTrigger) and periodic_filter(trig) ) :
-                            ordinance.writer.info(f"Firing trigger '{trig.id}', of sched '{sched.name}', daemonic={trig.daemonic}")
-                            active_threads.append(sched(plugin_instance, trig.daemonic))
+            # generator for all schedules
+            def sched_gen():
+                for plugin_name,scheduled_funcs in self.__schedules.items():
+                    if scheduled_funcs is None:
+                        continue  # plugin is unloaded
+                    plugin_instance = self.__plugins[plugin_name]
+                    for sched_name,sched in scheduled_funcs.items():
+                        yield (plugin_instance, sched)
+            
+            # scheduled triggers
+            for plugin_instance,sched in sched_gen():
+                for trig in sched._get_triggers():
+                    if ( isinstance(trig, ordinance.schedule.CalendarTrigger) and calendar_filter(trig) ) \
+                    or ( isinstance(trig, ordinance.schedule.DelayTrigger)    and delay_filter(trig)    ) \
+                    or ( isinstance(trig, ordinance.schedule.PeriodicTrigger) and periodic_filter(trig) ) :
+                        ordinance.writer.info(f"Firing trigger '{trig.id}', of sched '{sched.name}', daemonic={trig.daemonic}")
+                        self.active_threads.append(sched(plugin_instance, trig.daemonic))
+            
             tick_stop = time.time()
             tick_elapsed = tick_stop - tick_start
             #ordinance.writer.debug(f"Finished scheduler tick. Took {tick_elapsed:.4f} seconds")
             time.sleep(poll_subtick - tick_elapsed)
         
         # teardown
-        ordinance.writer.debug(f"Scheduler noticed shutdown. Closing {len(active_threads)} active threads.")
-        if len(active_threads):
-            ordinance.writer.info(f"Some threads still active. Joining with timeout 5s...")
-            active_threads = async_join_threads(active_threads, timeout=5.0)
+        ordinance.writer.debug(f"Scheduler noticed shutdown. Closing {len(self.active_threads)} active threads.")
+        if len(self.active_threads):
+            ordinance.writer.warn(f"Some threads still active. Joining with timeout 5s...")
+            self.active_threads = async_join_threads(self.active_threads, timeout=5.0)
         
-        if len(active_threads):
-            ordinance.writer.info(f"Some threads did not finish within 5 seconds. Destroying.")
+        if len(self.active_threads):
+            ordinance.writer.warn(f"Some threads did not finish within 5 seconds. Dropping.")
 
         ordinance.writer.info(f"Scheduler stopped.")
         ordinance.writer.debug("Stopped scheduler thread.")
 
 
-    def command(self, cmd: str) -> None:
+    def _fire_event_thread(self, event: str, plugins: Optional[List[str]] = ...) -> List[threading.Thread]:
+        ordinance.writer.info(f"Firing event {event} for {plugins}")
+        active = []
+        if plugins is ...: plugins = self.__plugins.keys()
+        for plugin_name in plugins:
+            scheduled_funcs = self.__schedules[plugin_name]
+            if scheduled_funcs is None:
+                continue  # plugin was unloaded
+            plugin_instance = self.__plugins[plugin_name]
+            for sched in scheduled_funcs.values():
+                for trig in sched._get_triggers():
+                    if isinstance(trig, ordinance.schedule.EventTrigger) and trig.event == event:
+                        ordinance.writer.debug(f"Firing trigger '{trig.id}', of sched '{sched.name}', daemonic={trig.daemonic}")
+                        active.append(sched(plugin_instance, trig.daemonic))
+        return active
+
+
+    def fire_event(self, event: str, plugins_list: Optional[List[str]] = ...) -> None:
+        """ Note: :const:`...` for `plugins` will fire on all plugins. """
+        active = self._fire_event_thread(event, plugins_list)
+        self.active_threads.extend(active)
+
+
+    def command(self, cmd: str) -> int:
         # handle simple commands
-        if   cmd == 'stop': return self.stop()
-        elif cmd == 'status':
-            return ordinance.writer.info(f"Plugins: {', '.join(self.__plugins.keys())}\n" + \
-                                         f"Writers: {', '.join(ordinance.writer.get_enabled())}")
-        # handle plugin commands
+        if not cmd: return
+        
+        if cmd == 'stop':
+            self.stop()
+            return -1
+        
+        if cmd == 'status':
+            ordinance.writer.info(
+                f"Plugins: {', '.join(self.__plugins.keys())}\n" + \
+                f"Writers: {', '.join(ordinance.writer.get_enabled())}")
+            return 0
+        
         cmd = cmd.split()
-        if len(cmd) == 1:
-            return ordinance.writer.error(f"Unknown command {cmd[0]}")
+        if len(cmd) > 1 and cmd[0] == 'alert':
+            ordinance.writer.warn(f"Publishing alert...")
+            ordinance.writer.alert(*cmd[1:])
+            return 0
+        
+        # handle plugin commands
+        
+        # fallback -- unknown command
+        ordinance.writer.error(f"Unknown command '{cmd[0]}'")
+        return -2
 
 
     # http api server stuffs
@@ -421,7 +487,6 @@ class Core:
         } for name in ordinance.writer.get_known() ]
 
     def _apiserver_status(self):
-        enabled = ordinance.writer.get_enabled()
         return {
             'plugins': self._apiserver_plugins(),
             'writers': self._apiserver_writers()

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 # 
-# Ordinance v4.0
+# Ordinance v4.1
 # An active honeypotting, monitoring, and protection tool.
 # 
 # Written by: @Kalamuwu

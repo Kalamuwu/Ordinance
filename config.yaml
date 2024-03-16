@@ -1,5 +1,5 @@
 # 
-# Ordinance v4.0
+# Ordinance v4.1
 # Written by: Kalamuwu
 # Github: https://github.com/Kalamuwu/Ordinance
 # 
@@ -11,6 +11,7 @@
 
 core:
   scheduler_tick: 30
+  scheduler_subtick: 5
 
 api:
   http_server:
@@ -29,3 +30,6 @@ writers:
         mask: 0b1111110
       - path: logs/important.log
         mask: 0b1110000
+  notif:
+    dbus_username:
+

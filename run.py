@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 # 
-# Ordinance v4.0
+# Ordinance v4.1
 # An active honeypotting, monitoring, and protection tool.
 # 
 # Written by: @Kalamuwu
@@ -24,7 +24,9 @@ core = Core(
 cmd = ""
 try:
     while core.running:
-        core.command(cmd)
+        if core.command(cmd) == -1:
+            # shutdown signal received on last command
+            break
         cmd = input("> ").strip().lstrip().lower()
 except KeyboardInterrupt:
     core.stop()

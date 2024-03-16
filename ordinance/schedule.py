@@ -61,8 +61,13 @@ class ScheduledFunction:
         return f"<ScheduledFunction tied to f{repr(self.__callback)}>"
     
     def __call__(self, plugin_instance, daemonic: Optional[bool] = False) -> threading.Thread:
+        def _exc_wrap(*args):
+            try: self.__callback(*args)
+            except Exception as e:
+                ordinance.writer.error("Failed to call ScheduledFunction callback:")
+                ordinance.writer.error(e)
         thread = threading.Thread(
-            target=self.__callback,
+            target=_exc_wrap,
             args=(plugin_instance,),
             name=self.name,
             daemon=daemonic)
