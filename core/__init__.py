@@ -37,7 +37,7 @@ import ordinance.plugin
 import ordinance.schedule
 import ordinance.util
 
-VERSION = "4.1"
+VERSION = "4.1.1"
 
 default_config_yaml = f"""# 
 # Ordinance v{VERSION}
@@ -323,33 +323,32 @@ class Core:
         return qname in self.__plugins
     
 
-    def _scheduler_loop(self, tick_interval: float, poll_subtick: float):
+    def _scheduler_loop(self, tick_interval: float, subtick_interval: float):
         ordinance.writer.debug("Started scheduler thread.")
         localtz = core.schedule_interface.local_tz()
         scheduler_start = datetime.datetime.now(tz=localtz)
         granularity = tick_interval/2
-        subtick_start = time.time()
-        elapsed_subtick_time = 0
 
+        last_tick_start = time.time()
         while self._scheduler_should_run:
             #ordinance.writer.debug("Doing scheduler subtick")
-            subtick_this = time.time()
-            elapsed_subtick_time = (subtick_this - subtick_start)
-            if elapsed_subtick_time <= tick_interval:
+            subtick_start = time.time()
+            time_since_last_tick = (subtick_start - last_tick_start)
+            if time_since_last_tick < tick_interval:
                 # not time for a full tick yet
-                time.sleep(poll_subtick)
+                time.sleep(subtick_interval)
                 continue
-            # time for scheduler tick!
+            # time for scheduler tick! reset subtick
             #ordinance.writer.debug("Doing scheduler tick")
+            last_tick_start = time.time()
             
-            tick_start = time.time()
-            time_now = datetime.datetime.now(tz=localtz)
-            total_elapsed = time_now - scheduler_start
+            datetime_now = datetime.datetime.now(tz=localtz)
+            total_elapsed = datetime_now - scheduler_start
             self.active_threads = [th for th in self.active_threads if th.is_alive()]
 
             def calendar_filter(trigger):
                 return core.schedule_interface.calendar_trigger_should_run(
-                    trigger, time_now, granularity=granularity)
+                    trigger, datetime_now, granularity=granularity)
 
             def delay_filter(trigger):
                 return core.schedule_interface.delay_trigger_should_run(
@@ -374,13 +373,13 @@ class Core:
                     if ( isinstance(trig, ordinance.schedule.CalendarTrigger) and calendar_filter(trig) ) \
                     or ( isinstance(trig, ordinance.schedule.DelayTrigger)    and delay_filter(trig)    ) \
                     or ( isinstance(trig, ordinance.schedule.PeriodicTrigger) and periodic_filter(trig) ) :
-                        ordinance.writer.info(f"Firing trigger '{trig.id}', of sched '{sched.name}', daemonic={trig.daemonic}")
+                        ordinance.writer.debug(f"Firing trigger '{trig.id}', of sched '{sched.name}' on plugin '{plugin_instance.qname}', daemonic={trig.daemonic}")
                         self.active_threads.append(sched(plugin_instance, trig.daemonic))
             
             tick_stop = time.time()
-            tick_elapsed = tick_stop - tick_start
+            tick_elapsed = tick_stop - subtick_start
             #ordinance.writer.debug(f"Finished scheduler tick. Took {tick_elapsed:.4f} seconds")
-            time.sleep(poll_subtick - tick_elapsed)
+            time.sleep(subtick_interval - tick_elapsed)
         
         # teardown
         ordinance.writer.debug(f"Scheduler noticed shutdown. Closing {len(self.active_threads)} active threads.")

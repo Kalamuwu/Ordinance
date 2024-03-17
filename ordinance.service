@@ -1,5 +1,5 @@
 [Unit]
-Description=Ordinance Core v4.1
+Description=Ordinance Core
 After=network-online.target
 Wants=network-online.target
 

@@ -1,8 +1,8 @@
-# Ordinance v4.1
+# Ordinance v4.1.1
 
 The Swiss-army-knife of honeypot and monitoring tools.
 
-*NOTE: Docs might not yet be completely up-to-date with version 4.1. Most of it should be, though.*
+*NOTE: Docs might not yet be completely up-to-date with version 4.1.1. Most of it should be, though.*
 
 ## Table of Contents
   1. **[Usage](#1-usage)** - General usage, configuration files, etc
